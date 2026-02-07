@@ -18,6 +18,7 @@ import {
   select,
   spinner,
 } from "@clack/prompts";
+import inquirerSelect from "@inquirer/select";
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "fs";
@@ -30,6 +31,8 @@ const VALID_THINKING_LEVELS = new Set([
   "high",
   "xhigh",
 ]);
+const DIM = "\x1b[90m";
+const RESET = "\x1b[0m";
 
 const COMMAND_NAME = "infer";
 const args = process.argv.slice(2);
@@ -153,6 +156,7 @@ const resourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir,
   settingsManager,
+  extensionFactories: [createBashApprovalExtension()],
 });
 
 await resourceLoader.reload();
@@ -179,9 +183,13 @@ const { session } = await createAgentSession({
 
 let lastAssistantText = "";
 let printedToolLine = false;
+let suppressBashToolLine = false;
 
 session.subscribe((event) => {
   if (event.type === "tool_execution_start") {
+    if (event.toolName === "bash" && suppressBashToolLine) {
+      return;
+    }
     const line = formatToolLine(event.toolName, event.args);
     if (line) {
       printedToolLine = true;
@@ -272,16 +280,16 @@ function resolveModel({ provider, modelId, settingsManager, modelRegistry }) {
 
 function formatToolLine(toolName, args) {
   if (toolName === "read" && args?.path) {
-    return `Read ${args.path}`;
+    return gray(`Read ${args.path}`);
   }
   if (toolName === "edit" && args?.path) {
-    return `Edit ${args.path}`;
+    return gray(`Edit ${args.path}`);
   }
   if (toolName === "write" && args?.path) {
-    return `Write ${args.path}`;
+    return gray(`Write ${args.path}`);
   }
   if (toolName === "bash" && args?.command) {
-    return `Ran ${args.command}`;
+    return gray(`! ${args.command}`);
   }
   return null;
 }
@@ -672,6 +680,78 @@ function resolveNumber(value, fallback) {
     return fallback;
   }
   return 0;
+}
+
+function gray(text) {
+  if (!process.stdout.isTTY) {
+    return text;
+  }
+  return `${DIM}${text}${RESET}`;
+}
+
+function createBashApprovalExtension() {
+  let allowAll = false;
+
+  return (pi) => {
+    pi.on("tool_call", async (event) => {
+      if (event.toolName !== "bash") {
+        return;
+      }
+
+      if (allowAll) {
+        return;
+      }
+
+      const command = typeof event.input?.command === "string" ? event.input.command : "";
+      if (!process.stdin.isTTY) {
+        return { block: true, reason: "Bash command blocked: no TTY for approval." };
+      }
+
+      suppressBashToolLine = true;
+      let decision;
+      try {
+        decision = await promptBashApproval(command);
+      } finally {
+        suppressBashToolLine = false;
+      }
+
+      if (decision === "accept_all") {
+        allowAll = true;
+        return;
+      }
+
+      if (decision === "accept") {
+        return;
+      }
+
+      return { block: true, reason: "Bash command rejected by user." };
+    });
+  };
+}
+
+async function promptBashApproval(command) {
+  return inquirerSelect({
+    message: gray(`! ${command || "(empty)"}`),
+    choices: [
+      { value: "accept", name: "Accept" },
+      { value: "reject", name: "Reject" },
+      { value: "accept_all", name: "Dangerous Accept All" },
+    ],
+    pageSize: 3,
+    loop: false,
+    theme: {
+      prefix: "",
+      icon: {
+        cursor: ">",
+      },
+      indexMode: "hidden",
+      style: {
+        keysHelpTip: () => undefined,
+        disabled: (text) => text,
+        description: (text) => text,
+      },
+    },
+  });
 }
 
 function fail(message) {

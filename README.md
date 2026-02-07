@@ -34,6 +34,14 @@ Ran ls -la
 <assistant response>
 ```
 
+## Bash Approval
+
+Every `bash` tool call prompts for approval:
+
+- `Accept`: runs the command once
+- `Reject`: blocks the command
+- `Dangerous Accept All`: runs all future bash commands in this process without prompting
+
 ## Sessions
 
 - Default: always starts a new session and deletes the previous one.

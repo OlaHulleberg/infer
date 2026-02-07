@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",
+    "@inquirer/select": "^5.0.4",
     "@mariozechner/pi-coding-agent": "^0.52.7"
   },
   "engines": {
