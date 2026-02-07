@@ -1,20 +1,19 @@
 # infer
 
-Minimal, no-TUI CLI that runs a Pi agent prompt and prints tool actions then the final answer.
+A tiny, no‑TUI CLI for asking a quick agentic question from your terminal.
+
+> Not a replacement for large agentic CLIs. Use those for workflows, long sessions, and heavy automation. Use `infer` for fast, focused answers with light tool use.
+
+---
 
 ## Install
 
 ```bash
 bun install
-```
-
-Link the command locally:
-
-```bash
 bun link
 ```
 
-## Usage
+## Quick start
 
 ```bash
 infer "Summarize this repo"
@@ -25,41 +24,37 @@ infer config --source models.dev
 echo "What files changed?" | infer
 ```
 
-Output example:
+## Why use it
 
-```
-Read README.md
-Ran ls -la
+- Minimal surface area and zero TUI overhead
+- Shows tool actions, then prints the final answer
+- Ideal for short, agentic questions in a shell
 
-<assistant response>
-```
+## How it behaves
 
-## Bash Approval
-
-Every `bash` tool call prompts for approval:
-
-- `Accept`: runs the command once
-- `Reject`: blocks the command
-- `Dangerous Accept All`: runs all future bash commands in this process without prompting
-
-## Sessions
-
-- Default: always starts a new session and deletes the previous one.
-- Continue: use `-c` or `-r` to reuse the last session.
+**Sessions**
+- Default: starts fresh and clears previous sessions
+- Continue: `-c` or `-r`
 - Storage: `~/.infer/agent/sessions/last.jsonl`
 
-## Config & Auth
+**Bash approval**
+Every `bash` tool call asks for approval:
+- **Accept**: run once
+- **Reject**: block
+- **Dangerous Accept All**: run all future bash commands in this process
 
-- Config dir: `~/.infer/agent`
-- Override: set `INFER_AGENT_DIR`
-- API keys: use environment variables (e.g. `OPENAI_API_KEY`) or `~/.infer/agent/auth.json`
-- Interactive setup: run `infer config`
+**Config & auth**
+- Config dir: `~/.infer/agent` (override with `INFER_AGENT_DIR`)
+- API keys: env vars (e.g. `OPENAI_API_KEY`) or `~/.infer/agent/auth.json`
+- Setup: `infer config`
 
 ## Flags
 
-- `-c`, `--continue`, `-r`, `--resume`: continue last session
-- `-p`, `--provider <name>`: model provider
-- `-m`, `--model <id>`: model id
-- `--thinking <level>`: off|minimal|low|medium|high|xhigh
-- `--source <local|models.dev>`: model source for `infer config`
-- `-h`, `--help`: show help
+| Flag | Description |
+| --- | --- |
+| `-c`, `--continue`, `-r`, `--resume` | Continue last session |
+| `-p`, `--provider <name>` | Model provider |
+| `-m`, `--model <id>` | Model id |
+| `--thinking <level>` | off \| minimal \| low \| medium \| high \| xhigh |
+| `--source <local\|models.dev>` | Model source for `infer config` |
+| `-h`, `--help` | Show help |
