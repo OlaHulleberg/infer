@@ -12,7 +12,7 @@ A tiny, no‑TUI CLI for asking a quick agentic question from your terminal.
 bun add -g @olahulleberg/infer @mariozechner/pi-coding-agent
 ```
 
-To get the latest pi without reinstalling infer:
+To update pi independently (new models, fixes) without touching infer:
 
 ```bash
 bun add -g @mariozechner/pi-coding-agent
@@ -29,36 +29,77 @@ bun link
 
 ```bash
 infer "Summarize this repo"
-infer -c "Continue from last session"
+infer -c "What did we just change?"
 infer --provider openai --model gpt-4o "Explain this error"
-infer config
-infer config --source models.dev
 echo "What files changed?" | infer
 ```
 
-## Why use it
+## Auth
 
-- Minimal surface area and zero TUI overhead
-- Shows tool actions, then prints the final answer
-- Ideal for short, agentic questions in a shell
+**API key** — set an environment variable or store it via `infer config`:
 
-## How it behaves
+```bash
+export ANTHROPIC_API_KEY=sk-...
+export OPENAI_API_KEY=sk-...
+```
 
-**Sessions**
-- Default: starts fresh and clears previous sessions
-- Continue: `-c` or `-r`
+**OAuth** — for providers that use browser login (Claude Pro/Max, ChatGPT Plus/Pro, GitHub Copilot, Gemini):
+
+```bash
+infer login              # pick a provider interactively
+infer login openai-codex
+infer login anthropic
+infer login github-copilot
+infer login google-gemini-cli
+```
+
+## Config
+
+```bash
+infer config
+```
+
+Interactive setup: pick a provider and model, set a default thinking level, optionally store an API key, and optionally configure a **classifier model**.
+
+## Bash approval
+
+Every `bash` tool call requires approval before it runs:
+
+```
+! grep -r "TODO" src/
+> Accept
+  Reject
+  Dangerous Accept All
+```
+
+- **Accept** — run once
+- **Reject** — block this command
+- **Dangerous Accept All** — skip approval for all remaining commands in this session
+
+## Classifier
+
+When a classifier model is configured (via `infer config`), read-only commands are auto-approved silently. Only commands with side effects prompt for approval.
+
+```
+✓ Search TODO in src/
+```
+
+vs.
+
+```
+! Delete build artifacts
+> Accept  Reject  Dangerous Accept All
+```
+
+The classifier uses the model you configure — no separate API key needed. If it fails for any reason, it falls back to the standard approval prompt.
+
+To set it up: run `infer config` and answer yes to the classifier prompt at the end.
+
+## Sessions
+
+- Default: fresh session, clears previous
+- Continue: `-c`, `-r`, `--continue`, `--resume`
 - Storage: `~/.infer/agent/sessions/last.jsonl`
-
-**Bash approval**
-Every `bash` tool call asks for approval:
-- **Accept**: run once
-- **Reject**: block
-- **Dangerous Accept All**: run all future bash commands in this process
-
-**Config & auth**
-- Config dir: `~/.infer/agent` (override with `INFER_AGENT_DIR`)
-- API keys: env vars (e.g. `OPENAI_API_KEY`) or `~/.infer/agent/auth.json`
-- Setup: `infer config`
 
 ## Flags
 
@@ -68,5 +109,11 @@ Every `bash` tool call asks for approval:
 | `-p`, `--provider <name>` | Model provider |
 | `-m`, `--model <id>` | Model id |
 | `--thinking <level>` | off \| minimal \| low \| medium \| high \| xhigh |
-| `--source <local\|models.dev>` | Model source for `infer config` |
 | `-h`, `--help` | Show help |
+| `-v`, `--version` | Show version |
+
+## Config dir
+
+`~/.infer/agent` — override with `INFER_AGENT_DIR`.
+
+Contains `settings.json`, `auth.json`, `classifier.json`, and `sessions/`.

@@ -1,6 +1,6 @@
 {
   "name": "@olahulleberg/infer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Minimal Pi-powered CLI for one-shot prompts",
   "type": "module",
   "bin": {
@@ -14,7 +14,7 @@
     "@inquirer/select": "^5.0.4"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.52.7"
+    "@mariozechner/pi-coding-agent": "^0.63.2"
   },
   "files": [
     "src/"

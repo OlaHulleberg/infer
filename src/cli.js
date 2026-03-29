@@ -17,11 +17,14 @@ import {
   password,
   select,
   spinner,
+  text,
 } from "@clack/prompts";
 import inquirerSelect from "@inquirer/select";
+import { completeSimple } from "@mariozechner/pi-ai";
 import { homedir } from "os";
 import { join, resolve } from "path";
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "fs";
+import { spawn } from "child_process";
 
 const VALID_THINKING_LEVELS = new Set([
   "off",
@@ -42,7 +45,6 @@ const options = {
   provider: undefined,
   model: undefined,
   thinking: undefined,
-  source: undefined,
   help: false,
   version: false,
 };
@@ -73,13 +75,12 @@ for (let i = 0; i < args.length; i += 1) {
     i += 1;
     continue;
   }
-  if (arg === "--source") {
-    options.source = requireValue(arg, args[i + 1]);
-    i += 1;
-    continue;
-  }
   if (arg === "config") {
     options.command = "config";
+    continue;
+  }
+  if (arg === "login") {
+    options.command = "login";
     continue;
   }
   if (arg === "-h" || arg === "--help") {
@@ -110,14 +111,6 @@ if (options.thinking && !VALID_THINKING_LEVELS.has(options.thinking)) {
   fail(`Invalid --thinking value: ${options.thinking}`);
 }
 
-if (options.source && options.source !== "local" && options.source !== "models.dev") {
-  fail(`Invalid --source value: ${options.source}`);
-}
-
-if (options.source && options.command !== "config") {
-  fail("--source is only valid with the config command.");
-}
-
 const agentDir = resolveAgentDir();
 const sessionDir = join(agentDir, "sessions");
 const sessionFile = join(sessionDir, "last.jsonl");
@@ -126,7 +119,7 @@ ensureDir(agentDir);
 ensureDir(sessionDir);
 
 const settingsManager = SettingsManager.create(process.cwd(), agentDir);
-const authStorage = new AuthStorage(join(agentDir, "auth.json"));
+const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
 
 if (options.command === "config") {
@@ -138,8 +131,12 @@ if (options.command === "config") {
     settingsManager,
     authStorage,
     modelRegistry,
-    source: options.source,
   });
+  process.exit(0);
+}
+
+if (options.command === "login") {
+  await runLogin({ authStorage, providerId: promptParts[0] });
   process.exit(0);
 }
 
@@ -156,7 +153,7 @@ const resourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir,
   settingsManager,
-  extensionFactories: [createBashApprovalExtension()],
+  extensionFactories: [createBashApprovalExtension({ modelRegistry, classifierConfig: loadClassifierConfig(agentDir) })],
 });
 
 await resourceLoader.reload();
@@ -183,11 +180,10 @@ const { session } = await createAgentSession({
 
 let lastAssistantText = "";
 let printedToolLine = false;
-let suppressBashToolLine = false;
 
 session.subscribe((event) => {
   if (event.type === "tool_execution_start") {
-    if (event.toolName === "bash" && suppressBashToolLine) {
+    if (event.toolName === "bash") {
       return;
     }
     const line = formatToolLine(event.toolName, event.args);
@@ -337,13 +333,13 @@ function printHelp() {
   process.stdout.write(
     `Usage: ${COMMAND_NAME} [options] <prompt>\n\n` +
       `Commands:\n` +
-      `  config                         Interactive configuration\n\n` +
+      `  config                         Interactive configuration\n` +
+      `  login [provider]               Login to an OAuth provider\n\n` +
       `Options:\n` +
       `  -c, --continue, -r, --resume  Continue last session\n` +
       `  -p, --provider <name>         Model provider\n` +
       `  -m, --model <id>              Model id\n` +
       `  --thinking <level>            off|minimal|low|medium|high|xhigh\n` +
-      `  --source <local|models.dev>   Model source for config\n` +
       `  -h, --help                    Show help\n` +
       `  -v, --version                 Show version\n`,
   );
@@ -361,83 +357,75 @@ function requireValue(flag, value) {
   return value;
 }
 
-async function runConfigurator({ agentDir, settingsManager, authStorage, modelRegistry, source }) {
+function openBrowser(url) {
+  const cmd =
+    process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+}
+
+async function runLogin({ authStorage, providerId }) {
+  intro("infer login");
+
+  const providers = authStorage.getOAuthProviders();
+  if (providers.length === 0) {
+    outro("No OAuth providers available.");
+    return;
+  }
+
+  let resolvedId = providerId;
+  if (!resolvedId) {
+    const choice = await select({
+      message: "Provider",
+      options: providers.map((p) => ({ value: p.id, label: p.name ?? p.id })),
+    });
+    if (isCancel(choice)) {
+      outro("Canceled.");
+      return;
+    }
+    resolvedId = choice;
+  }
+
+  const spin = spinner();
+  spin.start(`Logging in to ${resolvedId}`);
+
+  try {
+    await authStorage.login(resolvedId, {
+      onAuth: ({ url, instructions }) => {
+        spin.stop(instructions ? `${instructions}\n  ${url}` : url);
+        openBrowser(url);
+      },
+      onPrompt: async ({ message }) => {
+        const input = await text({ message });
+        if (isCancel(input)) throw new Error("Canceled.");
+        return input;
+      },
+      onManualCodeInput: async () => {
+        const input = await text({ message: "Paste the authorization code or redirect URL:" });
+        if (isCancel(input)) throw new Error("Canceled.");
+        return input;
+      },
+      onProgress: (message) => {
+        spin.start(message);
+      },
+    });
+    spin.stop(`Logged in to ${resolvedId}`);
+    outro("Done.");
+  } catch (err) {
+    spin.stop("Login failed.");
+    fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function runConfigurator({ agentDir, settingsManager, authStorage, modelRegistry }) {
   intro("infer config");
 
-  const localCatalog = buildLocalCatalog(modelRegistry);
-  if (localCatalog.models.length === 0) {
+  const catalog = buildLocalCatalog(modelRegistry);
+  if (catalog.models.length === 0) {
     outro("No local models found. Check your installation.");
     return;
   }
 
-  const selectedSource =
-    source ??
-    (await select({
-      message: "Model source",
-      options: [
-        { value: "local", label: "Local Pi registry", hint: "Fast, tool-calling models only" },
-        { value: "models.dev", label: "models.dev", hint: "Filtered to models supported here" },
-      ],
-      initialValue: "local",
-    }));
-
-  if (isCancel(selectedSource)) {
-    outro("Canceled.");
-    return;
-  }
-
-  let catalog = localCatalog;
-  if (selectedSource === "models.dev") {
-    const spin = spinner();
-    spin.start("Fetching models.dev");
-    try {
-      catalog = await buildModelsDevCatalog(modelRegistry, localCatalog.index);
-      spin.stop("Loaded models.dev");
-    } catch (error) {
-      spin.stop("Failed to load models.dev");
-      const message = error instanceof Error ? error.message : String(error);
-      note(message, "Using local registry instead");
-      catalog = localCatalog;
-    }
-  }
-
-  const reasoningOnly = await confirm({
-    message: "Require reasoning support?",
-    initialValue: false,
-  });
-  if (isCancel(reasoningOnly)) {
-    outro("Canceled.");
-    return;
-  }
-
-  const minContext = await select({
-    message: "Minimum context window",
-    options: [
-      { value: 0, label: "No minimum" },
-      { value: 32000, label: "32k" },
-      { value: 128000, label: "128k" },
-      { value: 256000, label: "256k" },
-      { value: 1000000, label: "1M" },
-    ],
-    initialValue: 0,
-  });
-  if (isCancel(minContext)) {
-    outro("Canceled.");
-    return;
-  }
-
-  const filtered = filterCatalog(catalog.models, {
-    reasoningOnly,
-    minContext,
-  });
-
-  if (filtered.length === 0) {
-    note("No models matched those filters.", "No matches");
-    outro("Canceled.");
-    return;
-  }
-
-  const providerOptions = buildProviderOptions(filtered);
+  const providerOptions = buildProviderOptions(catalog.models);
   const providerId = await autocomplete({
     message: "Provider",
     options: providerOptions,
@@ -448,7 +436,7 @@ async function runConfigurator({ agentDir, settingsManager, authStorage, modelRe
     return;
   }
 
-  const modelOptions = buildModelOptions(filtered, providerId);
+  const modelOptions = buildModelOptions(catalog.models, providerId);
   if (modelOptions.length === 0) {
     note("No models found for that provider.", "No matches");
     outro("Canceled.");
@@ -525,6 +513,46 @@ async function runConfigurator({ agentDir, settingsManager, authStorage, modelRe
     )}.`,
     "Done",
   );
+
+  const configureClassifier = await confirm({
+    message: "Configure a classifier model for auto-approving safe bash commands?",
+    initialValue: false,
+  });
+  if (isCancel(configureClassifier)) {
+    outro("Configuration complete.");
+    return;
+  }
+
+  if (configureClassifier) {
+    const classifierProviderOptions = buildProviderOptions(catalog.models);
+    const classifierProviderId = await autocomplete({
+      message: "Classifier provider",
+      options: classifierProviderOptions,
+      maxItems: 12,
+    });
+    if (isCancel(classifierProviderId)) {
+      outro("Configuration complete.");
+      return;
+    }
+
+    const classifierModelOptions = buildModelOptions(catalog.models, classifierProviderId);
+    if (classifierModelOptions.length === 0) {
+      note("No models found for that provider.", "Skipping classifier");
+    } else {
+      const classifierModelId = await autocomplete({
+        message: "Classifier model",
+        options: classifierModelOptions,
+        maxItems: 12,
+      });
+      if (isCancel(classifierModelId)) {
+        outro("Configuration complete.");
+        return;
+      }
+      saveClassifierConfig(agentDir, { provider: classifierProviderId, model: classifierModelId });
+      note(`Classifier: ${classifierProviderId}/${classifierModelId}`, "Classifier saved");
+    }
+  }
+
   outro("Configuration complete.");
 }
 
@@ -539,67 +567,6 @@ function buildLocalCatalog(modelRegistry) {
     maxTokens: typeof model.maxTokens === "number" ? model.maxTokens : 0,
   }));
   return {
-    source: "local",
-    models,
-    index: indexModels(models),
-  };
-}
-
-async function buildModelsDevCatalog(modelRegistry, localIndex) {
-  const response = await fetch("https://models.dev/api.json");
-  if (!response.ok) {
-    throw new Error(`models.dev request failed: ${response.status}`);
-  }
-  const data = await response.json();
-  const providerAliases = {
-    azure: "azure-openai-responses",
-    "kimi-for-coding": "kimi-coding",
-    vercel: "vercel-ai-gateway",
-  };
-
-  const models = [];
-  const providers = Object.values(data);
-  for (const provider of providers) {
-    if (!provider || !provider.id || !provider.models) {
-      continue;
-    }
-    const rawProviderId = String(provider.id);
-    const providerId = providerAliases[rawProviderId] ?? rawProviderId;
-    const providerModels = provider.models;
-    if (!localIndex.has(providerId)) {
-      continue;
-    }
-    for (const model of Object.values(providerModels)) {
-      if (!model || !model.id) {
-        continue;
-      }
-      if (model.tool_call === false) {
-        continue;
-      }
-      const modelId = String(model.id);
-      const localProviderModels = localIndex.get(providerId);
-      if (!localProviderModels || !localProviderModels.has(modelId)) {
-        continue;
-      }
-      const localModel = localProviderModels.get(modelId);
-      models.push({
-        providerId,
-        providerName: provider.name ?? providerId,
-        modelId,
-        name: model.name ?? (localModel?.name ?? modelId),
-        reasoning: model.reasoning ?? Boolean(localModel?.reasoning),
-        contextWindow: resolveNumber(model.limit?.context, localModel?.contextWindow),
-        maxTokens: resolveNumber(model.limit?.output, localModel?.maxTokens),
-      });
-    }
-  }
-
-  if (models.length === 0) {
-    return buildLocalCatalog(modelRegistry);
-  }
-
-  return {
-    source: "models.dev",
     models,
     index: indexModels(models),
   };
@@ -614,18 +581,6 @@ function indexModels(models) {
     map.get(model.providerId).set(model.modelId, model);
   }
   return map;
-}
-
-function filterCatalog(models, { reasoningOnly, minContext }) {
-  return models.filter((model) => {
-    if (reasoningOnly && !model.reasoning) {
-      return false;
-    }
-    if (minContext > 0) {
-      return model.contextWindow >= minContext;
-    }
-    return true;
-  });
 }
 
 function buildProviderOptions(models) {
@@ -672,14 +627,22 @@ function formatContext(value) {
   return String(value);
 }
 
-function resolveNumber(value, fallback) {
-  if (typeof value === "number" && !Number.isNaN(value)) {
-    return value;
+function loadClassifierConfig(agentDir) {
+  const file = join(agentDir, "classifier.json");
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf-8"));
+    if (typeof parsed.provider === "string" && typeof parsed.model === "string") {
+      return { provider: parsed.provider, model: parsed.model };
+    }
+    return null;
+  } catch {
+    return null;
   }
-  if (typeof fallback === "number" && !Number.isNaN(fallback)) {
-    return fallback;
-  }
-  return 0;
+}
+
+function saveClassifierConfig(agentDir, config) {
+  writeFileSync(join(agentDir, "classifier.json"), JSON.stringify(config, null, 2), "utf-8");
 }
 
 function gray(text) {
@@ -689,7 +652,7 @@ function gray(text) {
   return `${DIM}${text}${RESET}`;
 }
 
-function createBashApprovalExtension() {
+function createBashApprovalExtension({ modelRegistry, classifierConfig }) {
   let allowAll = false;
 
   return (pi) => {
@@ -699,20 +662,39 @@ function createBashApprovalExtension() {
       }
 
       if (allowAll) {
+        const command = typeof event.input?.command === "string" ? event.input.command : "";
+        process.stdout.write(gray(`! ${command}\n`));
         return;
       }
 
-      const command = typeof event.input?.command === "string" ? event.input.command : "";
       if (!process.stdin.isTTY) {
         return { block: true, reason: "Bash command blocked: no TTY for approval." };
       }
 
-      suppressBashToolLine = true;
+      const command = typeof event.input?.command === "string" ? event.input.command : "";
+
+      if (classifierConfig) {
+        const classification = await classifyCommand(command, { modelRegistry, classifierConfig });
+        if (classification.harmless) {
+          process.stdout.write(gray(`✓ ${classification.description}\n`));
+          return;
+        }
+        let decision;
+        try {
+          decision = await promptBashApproval(command, classification.description);
+        } catch (e) {
+          throw e;
+        }
+        if (decision === "accept_all") { allowAll = true; return; }
+        if (decision === "accept") return;
+        return { block: true, reason: "Bash command rejected by user." };
+      }
+
       let decision;
       try {
         decision = await promptBashApproval(command);
-      } finally {
-        suppressBashToolLine = false;
+      } catch (e) {
+        throw e;
       }
 
       if (decision === "accept_all") {
@@ -729,9 +711,57 @@ function createBashApprovalExtension() {
   };
 }
 
-async function promptBashApproval(command) {
+async function classifyCommand(command, { modelRegistry, classifierConfig }) {
+  try {
+    const model = modelRegistry.find(classifierConfig.provider, classifierConfig.model);
+    if (!model) return { harmless: false, description: command };
+
+    const auth = await modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok || !auth.apiKey) return { harmless: false, description: command };
+
+    const result = await completeSimple(
+      model,
+      {
+        systemPrompt: `Classify a bash command. Respond ONLY with JSON: {"description":"<concise action, max 6 words>","harmless":<true|false>}
+
+"harmless" is true ONLY if the command is purely read-only and non-destructive:
+- Reading files, listing directories, searching content (cat, ls, find, grep, head, tail, wc, etc.)
+- Fetching URLs for display only (curl/wget without -o or piping to shell)
+- Checking system state (ps, env, which, pwd, uname, echo, etc.)
+
+"harmless" is false if the command:
+- Writes, creates, moves, copies, or deletes files
+- Makes API calls with side effects
+- Downloads and saves files
+- Runs scripts (.sh, .py, etc.) without reading them first
+- Uses sudo or elevated privileges
+- Pipes into another shell or interpreter
+- Has any side effects beyond reading`,
+        messages: [{ role: "user", content: command, timestamp: Date.now() }],
+      },
+      { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 500 }
+    );
+
+    const text = result.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("")
+      .trim();
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return { harmless: false, description: command };
+    const parsed = JSON.parse(match[0]);
+    return {
+      description: typeof parsed.description === "string" ? parsed.description : command,
+      harmless: parsed.harmless === true,
+    };
+  } catch {
+    return { harmless: false, description: command };
+  }
+}
+
+async function promptBashApproval(command, description) {
   return inquirerSelect({
-    message: gray(`! ${command || "(empty)"}`),
+    message: gray(`! ${description || command || "(empty)"}`),
     choices: [
       { value: "accept", name: "Accept" },
       { value: "reject", name: "Reject" },
