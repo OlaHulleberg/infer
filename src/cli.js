@@ -24,7 +24,7 @@ import { completeSimple } from "@mariozechner/pi-ai";
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "fs";
-import { spawn } from "child_process";
+import { spawn, execFileSync } from "child_process";
 
 const VALID_THINKING_LEVELS = new Set([
   "off",
@@ -149,11 +149,26 @@ if (!prompt) {
 if (!options.continue) {
   clearSessions(sessionDir);
 }
+
+const classifierConfig = loadClassifierConfig(agentDir);
+const sandboxBin = detectSandbox();
+
+if (classifierConfig && !sandboxBin) {
+  process.stderr.write(
+    gray(
+      "Warning: classifier is active but no sandbox detected. Auto-approved commands run without isolation.\n" +
+      "  Linux: install bubblewrap (bwrap)  |  macOS: sandbox-exec should be built-in\n",
+    ),
+  );
+}
+
+const sandboxState = { next: false };
+
 const resourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir,
   settingsManager,
-  extensionFactories: [createBashApprovalExtension({ modelRegistry, classifierConfig: loadClassifierConfig(agentDir) })],
+  extensionFactories: [createBashApprovalExtension({ modelRegistry, classifierConfig, sandboxBin, sandboxState })],
 });
 
 await resourceLoader.reload();
@@ -177,6 +192,20 @@ const { session } = await createAgentSession({
   model: model ?? undefined,
   thinkingLevel: options.thinking,
 });
+
+if (sandboxBin && classifierConfig) {
+  const bt = session.agent.state.tools.find((t) => t.name === "bash");
+  if (bt) {
+    const orig = bt.execute;
+    bt.execute = async (id, args, signal, progress) => {
+      if (sandboxState.next) {
+        sandboxState.next = false;
+        args = { ...args, command: wrapWithSandbox(args.command, sandboxBin) };
+      }
+      return orig(id, args, signal, progress);
+    };
+  }
+}
 
 let lastAssistantText = "";
 let printedToolLine = false;
@@ -627,6 +656,32 @@ function formatContext(value) {
   return String(value);
 }
 
+function detectSandbox() {
+  try {
+    if (process.platform === "linux") {
+      execFileSync("which", ["bwrap"], { stdio: "ignore" });
+      return "bwrap";
+    }
+    if (process.platform === "darwin") {
+      execFileSync("which", ["sandbox-exec"], { stdio: "ignore" });
+      return "sandbox-exec";
+    }
+  } catch {}
+  return null;
+}
+
+function wrapWithSandbox(command, sandboxBin) {
+  const q = "'" + command.replace(/'/g, "'\\''") + "'";
+  if (sandboxBin === "bwrap") {
+    return `bwrap --ro-bind / / --dev-bind /dev /dev --proc /proc --tmpfs /tmp -- sh -c ${q}`;
+  }
+  if (sandboxBin === "sandbox-exec") {
+    const profile = "(version 1)(deny default)(allow file-read* file-map-executable process-exec process-fork signal sysctl-read mach-lookup)";
+    return `sandbox-exec -p '${profile}' sh -c ${q}`;
+  }
+  return command;
+}
+
 function loadClassifierConfig(agentDir) {
   const file = join(agentDir, "classifier.json");
   if (!existsSync(file)) return null;
@@ -652,7 +707,7 @@ function gray(text) {
   return `${DIM}${text}${RESET}`;
 }
 
-function createBashApprovalExtension({ modelRegistry, classifierConfig }) {
+function createBashApprovalExtension({ modelRegistry, classifierConfig, sandboxBin, sandboxState }) {
   let allowAll = false;
 
   return (pi) => {
@@ -677,6 +732,7 @@ function createBashApprovalExtension({ modelRegistry, classifierConfig }) {
         const classification = await classifyCommand(command, { modelRegistry, classifierConfig });
         if (classification.harmless) {
           process.stdout.write(gray(`✓ ${classification.description}\n`));
+          if (sandboxBin) sandboxState.next = true;
           return;
         }
         let decision;

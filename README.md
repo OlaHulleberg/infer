@@ -48,7 +48,6 @@ export OPENAI_API_KEY=sk-...
 ```bash
 infer login              # pick a provider interactively
 infer login openai-codex
-infer login anthropic
 infer login github-copilot
 infer login google-gemini-cli
 ```
@@ -94,6 +93,16 @@ vs.
 The classifier uses the model you configure — no separate API key needed. If it fails for any reason, it falls back to the standard approval prompt.
 
 To set it up: run `infer config` and answer yes to the classifier prompt at the end.
+
+## Sandbox
+
+When a classifier is configured, auto-approved commands run inside a sandbox that makes the filesystem read-only. The command can read anything but cannot write, delete, or modify files.
+
+**Linux:** requires [`bwrap`](https://github.com/containers/bubblewrap) (`sudo apt install bubblewrap` / `sudo pacman -S bubblewrap`)
+
+**macOS:** uses `sandbox-exec`, which is built-in.
+
+If the classifier is configured but no sandbox is detected, infer warns at startup and falls back to running auto-approved commands without isolation.
 
 ## Sessions
 

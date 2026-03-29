@@ -1,6 +1,6 @@
 {
   "name": "@olahulleberg/infer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Minimal Pi-powered CLI for one-shot prompts",
   "type": "module",
   "bin": {
