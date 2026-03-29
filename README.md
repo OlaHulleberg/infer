@@ -9,6 +9,18 @@ A tiny, no‑TUI CLI for asking a quick agentic question from your terminal.
 ## Install
 
 ```bash
+bun add -g infer-cli @mariozechner/pi-coding-agent
+```
+
+To get the latest pi without reinstalling infer:
+
+```bash
+bun add -g @mariozechner/pi-coding-agent
+```
+
+**Local dev:**
+
+```bash
 bun install
 bun link
 ```

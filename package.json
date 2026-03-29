@@ -2,7 +2,6 @@
   "name": "infer-cli",
   "version": "0.1.0",
   "description": "Minimal Pi-powered CLI for one-shot prompts",
-  "private": true,
   "type": "module",
   "bin": {
     "infer": "src/cli.js"
@@ -12,8 +11,10 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",
-    "@inquirer/select": "^5.0.4",
-    "@mariozechner/pi-coding-agent": "^0.52.7"
+    "@inquirer/select": "^5.0.4"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.52.7"
   },
   "engines": {
     "node": ">=20.0.0"
