@@ -1,5 +1,5 @@
 {
-  "name": "infer-cli",
+  "name": "@olahulleberg/infer",
   "version": "0.1.0",
   "description": "Minimal Pi-powered CLI for one-shot prompts",
   "type": "module",
@@ -15,6 +15,12 @@
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": ">=0.52.7"
+  },
+  "files": [
+    "src/"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=20.0.0"
